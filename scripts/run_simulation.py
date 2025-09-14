@@ -1,60 +1,74 @@
 # File: scripts/run_simulation.py
 import sys
 import os
-import numpy as np
 
-# --- Dòng code quan trọng để giải quyết vấn đề import ---
-# Khi chạy file này từ thư mục gốc (ví dụ: python scripts/run_simulation.py),
-# Python cần biết phải tìm các module 'qsagin' ở đâu.
-# Đoạn code này thêm thư mục gốc của dự án (Q-SAGINsim) vào đường dẫn tìm kiếm của Python.
-# Điều này cho phép chúng ta import từ `qsagin` một cách suôn sẻ.
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(project_root)
-# ---------------------------------------------------------
 
 from qsagin.core.orchestrator import Orchestrator
 from qsagin.simulators.sim_classical import MockClassicalSimulator
-from qsagin.simulators.sim_quantum import MockQuantumSimulator
+from qsagin.simulators.sim_quantum import SequenceSimulator
 from qsagin.agents.base_agent import RandomAgent
 
+def define_scenario_config():
+    """Defines a simple 2-node BB84 scenario based on the official example."""
+    node_names = ["Alice", "Bob"]
+    
+    config = {
+        "simulation": {
+            # Since SeQUeNCo runs to completion, we only need 1 step in our framework
+            "steps": 1 
+        },
+        "classical_network": {
+            "num_nodes": len(node_names)
+        },
+        "quantum_network": {
+            "sim_time_ns": 10e9, # 10 simulated seconds
+            "topology": {
+                "nodes": node_names,
+                "distance": 1e3, # 1 km
+            },
+            "attenuation": 1e-5, # 0.01 dB/km
+            "key_size": 256,
+            "num_keys": 50,
+        },
+        "agent": {
+            "num_quantum_actions": 1 
+        }
+    }
+    return config
+
 def main():
-    """Hàm chính để thiết lập và chạy mô phỏng."""
-    print("=============================================")
-    print("=== Initializing Q-SAGINsim Framework ===")
-    print("=============================================")
+    print("=" * 50)
+    print("      INITIALIZING Q-SAGINSIM FRAMEWORK")
+    print("      (Logic based on official SeQUeNCo example)")
+    print("=" * 50)
     
-    # --- 1. Định nghĩa các tham số cho kịch bản mô phỏng ---
-    # Đưa các tham số ra đây giúp chúng ta dễ dàng thay đổi kịch bản
-    # mà không cần phải vào sâu trong code.
-    SIMULATION_STEPS = 5
-    NUM_SATELLITES = 5
-    NUM_QUANTUM_LINKS = 5
-    
-    # --- 2. Khởi tạo các thành phần ---
-    # Hiện tại chúng ta truyền vào config rỗng, sau này sẽ đọc từ file .yaml
-    print("\n[Setup] Initializing components...")
-    classical_sim = MockClassicalSimulator(sim_config={})
-    quantum_sim = MockQuantumSimulator(sim_config={})
-    
-    # Agent cần biết "không gian hành động" của nó lớn đến đâu
+    config = define_scenario_config()
+
+    classical_sim = MockClassicalSimulator(sim_config=config["classical_network"])
+    quantum_sim = SequenceSimulator(sim_config=config["quantum_network"])
     agent = RandomAgent(
-        num_satellites=NUM_SATELLITES,
-        num_quantum_links=NUM_QUANTUM_LINKS
+        num_satellites=config["classical_network"]["num_nodes"],
+        num_quantum_links=config["agent"]["num_quantum_actions"]
     )
     
-    # --- 3. "Tiêm" các thành phần vào Orchestrator (Dependency Injection) ---
-    # Đây là bước quan trọng nhất, kết nối mọi thứ lại với nhau.
-    print("[Setup] Assembling the orchestrator...")
+    # NOTE: The Orchestrator is now simplified. For this example,
+    # it will just run for a single step to trigger the SeQUeNCo simulation.
     orchestrator = Orchestrator(
         classical_sim=classical_sim,
         quantum_sim=quantum_sim,
         agent=agent
     )
     
-    # --- 4. Bắt đầu chạy mô phỏng ---
-    orchestrator.run(num_steps=SIMULATION_STEPS)
+    orchestrator.run(num_steps=config["simulation"]["steps"])
+    
+    # Print final result from the get_state method
+    final_state = quantum_sim.get_state()
+    print("\n" + "="*20 + " FINAL RESULT " + "="*20)
+    print(f"Final Key Rate: {final_state['key_rate_bps']:.2f} bps")
+    print("="*52)
+
 
 if __name__ == "__main__":
-    # Dòng `if __name__ == "__main__":` là một chuẩn của Python.
-    # Nó đảm bảo rằng hàm `main()` chỉ được gọi khi file này được chạy trực tiếp.
     main()

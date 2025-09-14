@@ -1,39 +1,98 @@
 # File: qsagin/simulators/sim_quantum.py
+
 import numpy as np
+import time  # <--- THÊM IMPORT NÀY
 from .base_simulator import BaseSimulator
 
-class MockQuantumSimulator(BaseSimulator):
+from sequence.kernel.timeline import Timeline
+from sequence.topology.node import QKDNode
+from sequence.components.optical_channel import QuantumChannel, ClassicalChannel
+from sequence.qkd.BB84 import pair_bb84_protocols
+
+class SequenceSimulator(BaseSimulator):
     """
-    Simulator "giả" cho mạng lượng tử.
-    Nó đóng vai trò là "diễn viên đóng thế" cho SeQUeNCe.
+    Simulator for quantum network, using the BB84 protocol.
+    Logic is now 100% based on the official SeQUeNCo example notebook.
     """
+    def __init__(self, sim_config):
+        super().__init__(sim_config)
+        self.timeline = None
+        self.nodes = {}
+        self.sender_protocol = None
+        self.key_rate_bps = 0.0
 
     def setup(self):
-        """Khởi tạo 5 kênh lượng tử với độ trung thực (fidelity) ngẫu nhiên."""
-        print("Setting up Mock Quantum Network...")
-        self.entanglement_fidelity = np.random.uniform(0.7, 0.95, size=(5,))
-        self.time_step = 0
-
-    def step(self, action):
-        """Mô phỏng fidelity bị suy giảm theo thời gian."""
-        print(f"[Quantum] Received action: {action} at t={self.time_step}")
-        # Giả lập fidelity bị giảm đi một chút
-        self.entanglement_fidelity -= 0.01
-        # Nếu action là "refresh", tăng fidelity của kênh đó lên
-        if action is not None and 0 <= action < len(self.entanglement_fidelity):
-            self.entanglement_fidelity[action] = 0.95 # Reset fidelity
-            
-        self.entanglement_fidelity = np.clip(self.entanglement_fidelity, 0, 1)
-        self.time_step += 1
+        """Setup 2-node topology and BB84 protocol based on the official example."""
+        print("Setting up SeQUeNCo based on official QKD example...")
         
-        # Reward giả: reward càng cao nếu fidelity trung bình càng cao
-        reward = np.mean(self.entanglement_fidelity)
-        return self.get_state(), reward, False, {}
+        sim_time_ns = self.config.get("sim_time_ns", 5e9)
+        self.timeline = Timeline(sim_time_ns)
+        
+        topology_config = self.config.get("topology", {})
+        node_names = topology_config.get("nodes", [])
+        assert len(node_names) == 2, "This scenario requires exactly 2 nodes."
+        
+        node1_name, node2_name = node_names
+        
+        node1 = QKDNode(node1_name, self.timeline, stack_size=1)
+        node2 = QKDNode(node2_name, self.timeline, stack_size=1)
+        self.nodes[node1_name] = node1
+        self.nodes[node2_name] = node2
+
+        pair_bb84_protocols(node1.protocol_stack[0], node2.protocol_stack[0])
+        self.sender_protocol = node1.protocol_stack[0]
+
+        distance = topology_config.get("distance", 1e3)
+        attenuation = self.config.get("attenuation", 1e-5)
+        
+        qc12 = QuantumChannel(f"qc_{node1_name}_{node2_name}", self.timeline,
+                              attenuation=attenuation, distance=distance)
+        cc12 = ClassicalChannel(f"cc_{node1_name}_{node2_name}", self.timeline, distance=distance)
+        qc12.set_ends(node1, node2_name)
+        cc12.set_ends(node1, node2_name)
+
+        qc21 = QuantumChannel(f"qc_{node2_name}_{node1_name}", self.timeline,
+                              attenuation=attenuation, distance=distance)
+        cc21 = ClassicalChannel(f"cc_{node2_name}_{node1_name}", self.timeline, distance=distance)
+        qc21.set_ends(node2, node1_name)
+        cc21.set_ends(node2, node1_name)
+
+        self.timeline.init()
+    
+    def step(self, action):
+        if action is not None and action == 0:
+            print(f"[SeQUeNCo] Action: Pushing key generation request...")
+            key_size = self.config.get("key_size", 256)
+            num_keys = self.config.get("num_keys", 50)
+            
+            self.sender_protocol.push(length=key_size, key_num=num_keys)
+
+            print("[SeQUeNCo] Running timeline to completion...")
+            # === FINAL FIX: Use Python's standard `time` module ===
+            start_real_time = time.time()
+            self.timeline.run()
+            end_real_time = time.time()
+            # =======================================================
+            print(f"Execution time: {(end_real_time - start_real_time):.2f} s")
+            
+            self._update_state()
+
+        reward = self.key_rate_bps
+        return self.get_state(), reward, True, {}
+
+    def _update_state(self):
+        """Get final metrics from the sender's protocol."""
+        if self.sender_protocol.throughputs and self.sender_protocol.throughputs[-1] > 0:
+            self.key_rate_bps = self.sender_protocol.throughputs[-1]
+            print(f"\nSUCCESS: BB84 protocol finished. Final throughput: {self.key_rate_bps:.2f} bps\n")
 
     def get_state(self):
-        """Trạng thái là fidelity của các kênh vướng víu."""
-        return {"fidelity": self.entanglement_fidelity}
+        return {"key_rate_bps": self.key_rate_bps}
 
     def reset(self):
+        self.timeline = None
+        self.nodes = {}
+        self.sender_protocol = None
+        self.key_rate_bps = 0.0
         self.setup()
         return self.get_state()
