@@ -1,74 +1,84 @@
 # File: scripts/run_simulation.py
 import sys
 import os
+import time
+import numpy as np
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(project_root)
+# Add the project root to the Python path
+sys.path.append('/app')
 
 from qsagin.core.orchestrator import Orchestrator
-from qsagin.simulators.sim_classical import MockClassicalSimulator
+from qsagin.simulators.sim_classical import NS3Simulator
 from qsagin.simulators.sim_quantum import SequenceSimulator
 from qsagin.agents.base_agent import RandomAgent
 
 def define_scenario_config():
-    """Defines a simple 2-node BB84 scenario based on the official example."""
-    node_names = ["Alice", "Bob"]
-    
+    """Defines a hybrid scenario with both classical and quantum simulators."""
     config = {
         "simulation": {
-            # Since SeQUeNCo runs to completion, we only need 1 step in our framework
-            "steps": 1 
+            "steps": 10 
         },
         "classical_network": {
-            "num_nodes": len(node_names)
+            # Config for NS3Simulator
+            "port": 5555,
+            "sim_args": {"--simTime": 10} # Let ns-3 run for 10s
         },
         "quantum_network": {
+            # Config for SequenceSimulator
             "sim_time_ns": 10e9, # 10 simulated seconds
             "topology": {
-                "nodes": node_names,
+                "nodes": ["Alice", "Bob"],
                 "distance": 1e3, # 1 km
             },
-            "attenuation": 1e-5, # 0.01 dB/km
             "key_size": 256,
-            "num_keys": 50,
+            "num_keys": 10,
         },
         "agent": {
-            "num_quantum_actions": 1 
+            # Action space for ns-3 is Discrete(5), SeQUeNCo is 1
+            "action_space_size": 5 
         }
     }
     return config
 
 def main():
-    print("=" * 50)
-    print("      INITIALIZING Q-SAGINSIM FRAMEWORK")
-    print("      (Logic based on official SeQUeNCo example)")
-    print("=" * 50)
+    print("=" * 60)
+    print("      RUNNING FULL Q-SAGINSIM FRAMEWORK (NS-3 + SeQUeNCo)")
+    print("=" * 60)
     
     config = define_scenario_config()
 
-    classical_sim = MockClassicalSimulator(sim_config=config["classical_network"])
-    quantum_sim = SequenceSimulator(sim_config=config["quantum_network"])
-    agent = RandomAgent(
-        num_satellites=config["classical_network"]["num_nodes"],
-        num_quantum_links=config["agent"]["num_quantum_actions"]
-    )
+    print("\n[SETUP] Initializing components...")
     
-    # NOTE: The Orchestrator is now simplified. For this example,
-    # it will just run for a single step to trigger the SeQUeNCo simulation.
-    orchestrator = Orchestrator(
-        classical_sim=classical_sim,
-        quantum_sim=quantum_sim,
-        agent=agent
-    )
-    
-    orchestrator.run(num_steps=config["simulation"]["steps"])
-    
-    # Print final result from the get_state method
-    final_state = quantum_sim.get_state()
-    print("\n" + "="*20 + " FINAL RESULT " + "="*20)
-    print(f"Final Key Rate: {final_state['key_rate_bps']:.2f} bps")
-    print("="*52)
+    # Initialize the real classical simulator
+    try:
+        classical_sim = NS3Simulator(sim_config=config["classical_network"])
+    except Exception as e:
+        print(f"\n[FATAL] Could not initialize NS3Simulator. Is the ns-3 process running?")
+        print(f"Error: {e}")
+        return
 
+    # Initialize the real quantum simulator
+    quantum_sim = SequenceSimulator(sim_config=config["quantum_network"])
+    
+    # Initialize a random agent
+    agent = RandomAgent(num_quantum_links=config["agent"]["action_space_size"])
+    
+    # Assemble the orchestrator
+    orchestrator = Orchestrator(classical_sim, quantum_sim, agent)
+    
+    print("\nWaiting 2 seconds for ns-3 process to be ready...")
+    time.sleep(2)
+
+    try:
+        # Run the full simulation loop
+        orchestrator.run(num_steps=config["simulation"]["steps"])
+    except Exception as e:
+        print(f"\n[FATAL] An error occurred during the simulation run.")
+        print(f"Error: {e}")
+    finally:
+        classical_sim.close()
+
+    print("\n" + "="*25 + " HYBRID SIMULATION FINISHED " + "="*25)
 
 if __name__ == "__main__":
     main()
